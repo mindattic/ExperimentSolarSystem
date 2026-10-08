@@ -88,7 +88,7 @@ const DEFAULTS: Record<Action, string> = {
   toggleOrbitalScale: "Backquote",
 };
 
-const STORAGE_KEY = "experimentrts.keybindings";
+const STORAGE_KEY = "experimentsolarsystem.keybindings";
 
 const MODIFIER_LABELS: Partial<Record<string, string>> = {
   AltLeft: "Alt",

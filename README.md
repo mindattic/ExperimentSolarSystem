@@ -1,4 +1,4 @@
-# ExperimentRTS
+# ExperimentSolarSystem
 
 A browser solar-system sandbox in Babylon.js: fly between planets built from real NASA and USGS elevation and colour maps, swap between true and compressed orbital scale, and watch a trade fleet fly between stations.
 
@@ -52,8 +52,8 @@ There is no hosted build. Run it locally with Vite (see Quick start).
 Prerequisites: Node.js and npm.
 
 ```bash
-git clone https://github.com/mindattic/ExperimentRTS.git
-cd ExperimentRTS
+git clone https://github.com/mindattic/ExperimentSolarSystem.git
+cd ExperimentSolarSystem
 npm install
 npm run dev
 ```

@@ -11,7 +11,7 @@ export const QUALITY_PRESETS: readonly QualityPreset[] = [
   { label: "Ultra", patchResolution: 41 },
 ];
 
-const STORAGE_KEY = "experimentrts.graphics";
+const STORAGE_KEY = "experimentsolarsystem.graphics";
 const DEFAULT_PRESET_INDEX = 2; // High
 const DEFAULT_DEVELOPER_MODE = true;
 const DEFAULT_NIGHT_BRIGHTNESS = 0.05;
