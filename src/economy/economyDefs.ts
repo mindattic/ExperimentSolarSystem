@@ -1,4 +1,5 @@
 import { BODY_DEFS, bodyRadius, maxSafePersonalSpaceRadius } from "../solarSystem/scale";
+import type { ShipRole } from "./combat";
 import type { FactionId } from "./factions";
 
 export interface BaseDef {
@@ -33,16 +34,24 @@ export interface ShipDef {
   name: string;
   faction: FactionId;
   crew: number;
+  /** Flavor-text fallback only - once trading starts, Ship.toExamineInfo() reports live cargo
+   * state instead (see ship.ts). */
   cargo: string;
+  /** Units of cargo this ship can carry at once - caps how much of a profitable good it buys per
+   * leg (see shipTrade.ts's chooseNextLeg). */
+  cargoCapacity: number;
   /** Peak speed reached at the flip point of its accelerate/decelerate journey, scene units/sec
    * - see shipTransit.ts. Not a constant cruise speed. */
   cruiseSpeed: number;
-  /** Base bodyNames or Station ids, visited in order then reversed (ping-pong) once the route's
-   * far end is reached. */
+  /** First-departure seed hint only - chooseNextLeg picks every subsequent leg dynamically by
+   * profit (ship.ts), so this never needs more than one entry past construction. */
   route: string[];
   /** Seconds spent docked/loading before departing for the next stop. */
   dwellSeconds: number;
   startRouteIndex?: number;
+  /** Defaults to "trader". Warships never trade - see combat.ts's combatUpdate. */
+  role?: ShipRole;
+  maxHull?: number;
 }
 
 /** One Base per landable body (rocky/dwarf/moon - anything with real solid ground and terrain;
@@ -99,17 +108,17 @@ for (const def of STATION_DEFS) {
 }
 
 export const SHIP_DEFS: readonly ShipDef[] = [
-  { id: "freighter1", name: "MV Perihelion", faction: "solFederation", crew: 8, cargo: "Machine parts (40t)", cruiseSpeed: 900, route: ["Earth", "earthYard"], dwellSeconds: 20 },
-  { id: "freighter2", name: "MV Long Reach", faction: "solFederation", crew: 6, cargo: "Refined metals (25t)", cruiseSpeed: 700, route: ["earthYard", "marsRelay"], dwellSeconds: 25 },
-  { id: "freighter3", name: "MV Second Wind", faction: "solFederation", crew: 5, cargo: "Water, ice (60t)", cruiseSpeed: 650, route: ["marsRelay", "Mars"], dwellSeconds: 15 },
-  { id: "trader1", name: "IS Rustwind", faction: "beltConsortium", crew: 4, cargo: "Ore (80t)", cruiseSpeed: 500, route: ["Pluto", "plutoOutpost"], dwellSeconds: 20 },
-  { id: "courier1", name: "MV Quickstep", faction: "solFederation", crew: 3, cargo: "Mail, small parts", cruiseSpeed: 1100, route: ["Venus", "venusRelay", "Earth"], dwellSeconds: 10 },
-  { id: "trader2", name: "IS Far Horizon", faction: "beltConsortium", crew: 5, cargo: "Exotic ices (30t)", cruiseSpeed: 550, route: ["plutoOutpost", "Eris"], dwellSeconds: 25 },
-  { id: "shuttle1", name: "MV Lunar Ferry", faction: "solFederation", crew: 10, cargo: "Passengers, mail", cruiseSpeed: 750, route: ["Earth", "Moon"], dwellSeconds: 15 },
-  { id: "trader3", name: "IS Solar Wind", faction: "beltConsortium", crew: 6, cargo: "Rare metals", cruiseSpeed: 800, route: ["Mercury", "Venus", "venusRelay"], dwellSeconds: 20 },
+  { id: "freighter1", name: "MV Perihelion", faction: "solFederation", crew: 8, cargo: "Machine parts (40t)", cargoCapacity: 40, cruiseSpeed: 900, route: ["Earth", "earthYard"], dwellSeconds: 20 },
+  { id: "freighter2", name: "MV Long Reach", faction: "solFederation", crew: 6, cargo: "Refined metals (25t)", cargoCapacity: 25, cruiseSpeed: 700, route: ["earthYard", "marsRelay"], dwellSeconds: 25 },
+  { id: "freighter3", name: "MV Second Wind", faction: "solFederation", crew: 5, cargo: "Water, ice (60t)", cargoCapacity: 60, cruiseSpeed: 650, route: ["marsRelay", "Mars"], dwellSeconds: 15 },
+  { id: "trader1", name: "IS Rustwind", faction: "beltConsortium", crew: 4, cargo: "Ore (80t)", cargoCapacity: 80, cruiseSpeed: 500, route: ["Pluto", "plutoOutpost"], dwellSeconds: 20 },
+  { id: "courier1", name: "MV Quickstep", faction: "solFederation", crew: 3, cargo: "Mail, small parts", cargoCapacity: 10, cruiseSpeed: 1100, route: ["Venus", "venusRelay", "Earth"], dwellSeconds: 10 },
+  { id: "trader2", name: "IS Far Horizon", faction: "beltConsortium", crew: 5, cargo: "Exotic ices (30t)", cargoCapacity: 30, cruiseSpeed: 550, route: ["plutoOutpost", "Eris"], dwellSeconds: 25 },
+  { id: "shuttle1", name: "MV Lunar Ferry", faction: "solFederation", crew: 10, cargo: "Passengers, mail", cargoCapacity: 15, cruiseSpeed: 750, route: ["Earth", "Moon"], dwellSeconds: 15 },
+  { id: "trader3", name: "IS Solar Wind", faction: "beltConsortium", crew: 6, cargo: "Rare metals", cargoCapacity: 35, cruiseSpeed: 800, route: ["Mercury", "Venus", "venusRelay"], dwellSeconds: 20 },
   // Long interplanetary hauls, chained so the belt consortium's supply line reaches all the way
   // out to Saturn: marsRelay -> jupiterHighport -> saturnRingStation across two ships.
-  { id: "freighter4", name: "MV Deep Range", faction: "solFederation", crew: 12, cargo: "Heavy machinery", cruiseSpeed: 950, route: ["marsRelay", "jupiterHighport"], dwellSeconds: 30 },
-  { id: "trader4", name: "IS Outer Reach", faction: "beltConsortium", crew: 7, cargo: "Exotic gases", cruiseSpeed: 600, route: ["jupiterHighport", "saturnRingStation"], dwellSeconds: 25 },
-  { id: "courier2", name: "MV Swift Arrow", faction: "solFederation", crew: 3, cargo: "Priority mail", cruiseSpeed: 1200, route: ["Earth", "Mars"], dwellSeconds: 10 },
+  { id: "freighter4", name: "MV Deep Range", faction: "solFederation", crew: 12, cargo: "Heavy machinery", cargoCapacity: 70, cruiseSpeed: 950, route: ["marsRelay", "jupiterHighport"], dwellSeconds: 30 },
+  { id: "trader4", name: "IS Outer Reach", faction: "beltConsortium", crew: 7, cargo: "Exotic gases", cargoCapacity: 45, cruiseSpeed: 600, route: ["jupiterHighport", "saturnRingStation"], dwellSeconds: 25 },
+  { id: "courier2", name: "MV Swift Arrow", faction: "solFederation", crew: 3, cargo: "Priority mail", cargoCapacity: 10, cruiseSpeed: 1200, route: ["Earth", "Mars"], dwellSeconds: 10 },
 ];

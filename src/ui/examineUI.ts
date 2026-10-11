@@ -12,6 +12,14 @@ export interface ExaminableInfo {
   speedUnitsPerSec?: number;
   /** Ships only, while in transit. */
   etaSeconds?: number;
+  /** Ships only. */
+  hull?: number;
+  /** Ships only. */
+  maxHull?: number;
+  /** Ships only - "trader" ships omit this (role is only worth surfacing for warships). */
+  role?: "warship";
+  /** Bases/Stations only, while under an active siege. 0..1. */
+  siegeProgress?: number;
 }
 
 function formatDuration(seconds: number): string {
@@ -91,8 +99,11 @@ export class ExamineUI {
 
   private renderPlacard(entity: ExaminableInfo): string {
     const stats = [entity.faction, `Crew ${entity.crew}`, entity.cargo];
+    if (entity.role === "warship") stats.push("Warship");
     if (entity.speedUnitsPerSec !== undefined) stats.push(`Speed ${entity.speedUnitsPerSec.toFixed(0)}`);
     if (entity.etaSeconds !== undefined) stats.push(`ETA ${formatDuration(entity.etaSeconds)}`);
+    if (entity.hull !== undefined && entity.maxHull !== undefined) stats.push(`Hull ${Math.max(0, entity.hull).toFixed(0)}/${entity.maxHull}`);
+    if (entity.siegeProgress !== undefined) stats.push(`Under siege: ${Math.round(entity.siegeProgress * 100)}%`);
     return `<div class="examine-name">${entity.name}</div><div class="examine-stats">${stats.join(" · ")}</div>`;
   }
 }

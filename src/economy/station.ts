@@ -3,9 +3,13 @@ import type { CelestialBody } from "../solarSystem/celestialBody";
 import { CelestialOrbit } from "../solarSystem/celestialOrbit";
 import { orbitalScale } from "../solarSystem/orbitalScale";
 import { spinPeriodSeconds } from "../solarSystem/scale";
-import type { Dockable } from "./dockable";
+import { SIEGE_DURATION_SECONDS } from "./combat";
+import type { Dockable, SiegeState } from "./dockable";
 import type { StationDef } from "./economyDefs";
+import type { FactionId } from "./factions";
 import { FACTION_PALETTES } from "./factions";
+import { Market } from "./market";
+import { PRODUCTION_DEFS } from "./productionDefs";
 import type { ExaminableInfo } from "../ui/examineUI";
 
 const tmpParentPos = new Vector3();
@@ -18,11 +22,11 @@ const materialCache = new Map<string, StandardMaterial>();
 /** Stations are a torus, not a box - CreateBox's per-face faceUV atlas trick (hullTexture.ts)
  * doesn't apply to a continuous ring surface, so this is a simple faction-colored material
  * instead (cached per faction, same sharing idea as createHullMaterial). */
-function createStationMaterial(scene: Scene, def: StationDef): StandardMaterial {
-  const cached = materialCache.get(def.faction);
+function createStationMaterial(scene: Scene, faction: FactionId): StandardMaterial {
+  const cached = materialCache.get(faction);
   if (cached) return cached;
-  const palette = FACTION_PALETTES[def.faction];
-  const material = new StandardMaterial(`stationMaterial_${def.faction}`, scene);
+  const palette = FACTION_PALETTES[faction];
+  const material = new StandardMaterial(`stationMaterial_${faction}`, scene);
   material.diffuseColor = palette.hull;
   material.emissiveColor = palette.accent.scale(0.15);
   material.specularColor = Color3.Black();
@@ -31,7 +35,7 @@ function createStationMaterial(scene: Scene, def: StationDef): StandardMaterial 
   // values don't compare consistently against a planet's logarithmic ones, so the torus could
   // draw in front of a planet that should be occluding it.
   material.useLogarithmicDepth = true;
-  materialCache.set(def.faction, material);
+  materialCache.set(faction, material);
   return material;
 }
 
@@ -70,6 +74,9 @@ export class Station implements Dockable {
   readonly orbit: CelestialOrbit;
   readonly parentBody: CelestialBody;
   readonly mesh: Mesh;
+  readonly market: Market;
+  readonly siege: SiegeState = { attacker: null, progressSeconds: 0 };
+  owner: FactionId;
   /** This station's orbit distance at gameplay/actual scale, same pattern as
    * CelestialBody.gameplaySemiMajorAxis/actualSemiMajorAxis - blended every frame in update() so
    * the ring keeps sitting "right up against the planet" as the parent's own rendered radius
@@ -77,12 +84,16 @@ export class Station implements Dockable {
    * whichever radius happened to be current at construction time. */
   private readonly gameplaySemiMajorAxis: number;
   private readonly actualSemiMajorAxis: number;
+  private readonly scene: Scene;
   private spinAngle = Math.random() * Math.PI * 2; // random phase so every station's ring doesn't spin in lockstep
 
   constructor(scene: Scene, def: StationDef, parentBody: CelestialBody) {
     this.id = def.id;
     this.def = def;
     this.parentBody = parentBody;
+    this.scene = scene;
+    this.owner = def.faction;
+    this.market = new Market(PRODUCTION_DEFS[this.id]);
     this.gameplaySemiMajorAxis = parentBody.radius * def.orbitRadiusInParentRadii;
     this.actualSemiMajorAxis = parentBody.actualRadius * def.orbitRadiusInParentRadii;
 
@@ -107,7 +118,7 @@ export class Station implements Dockable {
 
     const outerRadius = Math.max(20, parentBody.radius * 0.05);
     this.mesh = MeshBuilder.CreateTorus(`${def.id}Mesh`, { diameter: outerRadius * 2, thickness: outerRadius * 0.28, tessellation: 24 }, scene);
-    this.mesh.material = createStationMaterial(scene, def);
+    this.mesh.material = createStationMaterial(scene, def.faction);
     // Parented to orbitNode, not spinNode (see the class doc comment) - update() computes its
     // rotationQuaternion directly every frame instead of relying on CelestialOrbit's generic
     // fixed-axis spin.
@@ -121,6 +132,7 @@ export class Station implements Dockable {
    * decorative spin around that same radial axis (harmless: a torus is rotationally symmetric
    * about its own hole axis, so this never changes which way it faces). */
   update(deltaSeconds: number): void {
+    this.market.tick(deltaSeconds);
     this.orbit.setSemiMajorAxis(this.gameplaySemiMajorAxis + (this.actualSemiMajorAxis - this.gameplaySemiMajorAxis) * orbitalScale.blend);
     this.spinAngle += deltaSeconds * ((2 * Math.PI) / STATION_SPIN_SECONDS);
     // orbitNode.position is this station's offset from the planet's own orbitNode origin (its
@@ -129,6 +141,14 @@ export class Station implements Dockable {
     Quaternion.RotationAxisToRef(Vector3.Up(), this.spinAngle, tmpSpinRot); // spin around local Y first...
     Quaternion.FromUnitVectorsToRef(Vector3.Up(), tmpRadialDir, tmpFaceRot); // ...then reorient Y to face the planet
     tmpFaceRot.multiplyToRef(tmpSpinRot, this.mesh.rotationQuaternion!);
+  }
+
+  /** Flips who benefits from this station's production (combat.ts's siege/capture rule) and
+   * recolors its ring to match - market stock is untouched, only future production/consumption
+   * benefit changes hands. */
+  setOwner(faction: FactionId): void {
+    this.owner = faction;
+    this.mesh.material = createStationMaterial(this.scene, faction);
   }
 
   /** Composes the parent planet's future position with this station's own future position in
@@ -147,13 +167,15 @@ export class Station implements Dockable {
   }
 
   toExamineInfo(): ExaminableInfo {
-    return {
+    const info: ExaminableInfo = {
       worldPosition: this.mesh.getAbsolutePosition(),
       name: this.def.name,
-      faction: FACTION_PALETTES[this.def.faction].label,
+      faction: FACTION_PALETTES[this.owner].label,
       kind: "Station",
       crew: this.def.crew,
-      cargo: this.def.cargo,
+      cargo: this.market.summarize(),
     };
+    if (this.siege.attacker !== null) info.siegeProgress = this.siege.progressSeconds / SIEGE_DURATION_SECONDS;
+    return info;
   }
 }

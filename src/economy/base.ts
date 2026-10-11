@@ -1,10 +1,14 @@
 import { Mesh, MeshBuilder, Scene, Vector3 } from "@babylonjs/core";
 import type { CelestialBody } from "../solarSystem/celestialBody";
 import { orbitalScale } from "../solarSystem/orbitalScale";
-import type { Dockable } from "./dockable";
+import { SIEGE_DURATION_SECONDS } from "./combat";
+import type { Dockable, SiegeState } from "./dockable";
 import type { BaseDef } from "./economyDefs";
+import type { FactionId } from "./factions";
 import { FACTION_PALETTES } from "./factions";
 import { createHullMaterial, hashSeed, HULL_FACE_UV } from "./hullTexture";
+import { Market } from "./market";
+import { PRODUCTION_DEFS } from "./productionDefs";
 import { mulberry32 } from "../terrain/prng";
 import type { ExaminableInfo } from "../ui/examineUI";
 
@@ -20,17 +24,24 @@ export class Base implements Dockable {
   readonly def: BaseDef;
   readonly parentBody: CelestialBody;
   readonly mesh: Mesh;
+  readonly market: Market;
+  readonly siege: SiegeState = { attacker: null, progressSeconds: 0 };
+  owner: FactionId;
   /** Fixed unit direction in the parent's non-rotating ORBIT frame (not the spinning surface
    * frame the mesh itself is parented to) - used only for ship arrival targeting later
    * (EconomyManager/Ship), so ships arrive at a stable "high orbit near the Base" point instead
    * of needing to predict the body's future spin phase too. Deliberately a different direction
    * from the mesh's own surface placement. */
   readonly approachDirectionInOrbitFrame: Vector3;
+  private readonly scene: Scene;
 
   constructor(scene: Scene, def: BaseDef, parentBody: CelestialBody) {
     this.id = def.bodyName;
     this.def = def;
     this.parentBody = parentBody;
+    this.scene = scene;
+    this.owner = def.faction;
+    this.market = new Market(PRODUCTION_DEFS[this.id]);
 
     const rand = mulberry32(hashSeed(def.bodyName));
     const surfaceDir = new Vector3(rand() - 0.5, rand() - 0.5, rand() - 0.5).normalize();
@@ -51,6 +62,18 @@ export class Base implements Dockable {
     this.mesh.position.copyFrom(surfaceDir.scale(parentBody.radius + elevation + clearance));
   }
 
+  update(deltaSeconds: number): void {
+    this.market.tick(deltaSeconds);
+  }
+
+  /** Flips who benefits from this base's production (combat.ts's siege/capture rule) and
+   * recolors its hull to match - market stock is untouched, only future production/consumption
+   * benefit changes hands. */
+  setOwner(faction: FactionId): void {
+    this.owner = faction;
+    this.mesh.material = createHullMaterial(this.scene, faction, hashSeed(this.id));
+  }
+
   /** Ships arrive at a stable "high orbit near the Base" point (the planet's future position
    * plus the fixed, non-rotating approach offset) rather than the Base's literal instantaneous
    * spin-rotated surface position - see approachDirectionInOrbitFrame's own doc comment. */
@@ -66,13 +89,15 @@ export class Base implements Dockable {
   }
 
   toExamineInfo(): ExaminableInfo {
-    return {
+    const info: ExaminableInfo = {
       worldPosition: this.mesh.getAbsolutePosition(),
       name: this.def.name,
-      faction: FACTION_PALETTES[this.def.faction].label,
+      faction: FACTION_PALETTES[this.owner].label,
       kind: "Base",
       crew: this.def.crew,
-      cargo: this.def.cargo,
+      cargo: this.market.summarize(),
     };
+    if (this.siege.attacker !== null) info.siegeProgress = this.siege.progressSeconds / SIEGE_DURATION_SECONDS;
+    return info;
   }
 }

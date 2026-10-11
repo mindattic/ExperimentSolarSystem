@@ -30,6 +30,7 @@ import { BodyIconsUI } from "./ui/bodyIcons";
 import { OffscreenIndicatorUI } from "./ui/offscreenIndicators";
 import { EconomyManager } from "./economy/economyManager";
 import { ExamineUI } from "./ui/examineUI";
+import { FactionStatusUI } from "./ui/factionStatusUI";
 import { SettingsMenu } from "./ui/settingsMenu";
 import { keybindings } from "./input/keybindings";
 import { graphicsSettings } from "./settings/graphicsSettings";
@@ -232,6 +233,7 @@ async function main() {
   const offscreenIndicatorUI = new OffscreenIndicatorUI(solarSystem, scene, engine);
   const economyManager = new EconomyManager(scene, solarSystem);
   const examineUI = new ExamineUI(scene, engine, () => economyManager.getExamineInfo(), () => settingsMenu.isListeningForKey);
+  const factionStatusUI = new FactionStatusUI(() => economyManager.getFactionSummary());
 
   const settingsMenu = new SettingsMenu(
     () => {
@@ -1030,6 +1032,7 @@ async function main() {
     offscreenIndicatorUI.update();
     economyManager.update(dt, scene.activeCamera!.globalPosition);
     examineUI.update();
+    factionStatusUI.update();
 
     devStats.hidden = !graphicsSettings.developerMode;
     if (graphicsSettings.developerMode) {

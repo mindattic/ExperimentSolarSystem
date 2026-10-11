@@ -1,9 +1,12 @@
 import { Mesh, MeshBuilder, Quaternion, Scene, StandardMaterial, TransformNode, Vector3, type LinesMesh } from "@babylonjs/core";
 import type { Dockable } from "./dockable";
 import type { ShipDef } from "./economyDefs";
-import { FACTION_PALETTES } from "./factions";
+import { FACTION_PALETTES, type FactionId } from "./factions";
 import { createHullMaterial, createShipIconMaterial, hashSeed, HULL_FACE_UV } from "./hullTexture";
 import { buildFlightProfile, computeFlightRotations, evaluateFlightProfile, evaluateFlightRotation, solveRendezvous, type FlightProfile } from "./shipTransit";
+import { chooseWarshipDestination, combatUpdate, TRADER_MAX_HULL, WARSHIP_DWELL_SECONDS, WARSHIP_MAX_HULL, type HealthState, type ShipRole } from "./combat";
+import { chooseNextLeg, type CargoState } from "./shipTrade";
+import type { ShipContext } from "./shipContext";
 import { EARTH_RADIUS } from "../solarSystem/scale";
 import { createUnlitLineMaterial } from "../solarSystem/celestialOrbit";
 import type { ExaminableInfo } from "../ui/examineUI";
@@ -24,8 +27,9 @@ const TRAJECTORY_GAP_SIZE = 150;
 
 const tmpPlannedFrom = new Vector3();
 
-/** Resolves a route-stop id (a Base's bodyName or a Station's id) to its Dockable. */
-export type StopResolver = (id: string) => Dockable;
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
 
 /** Everything needed to fly (or have flown) one leg: the flight profile itself plus the
  * destination it's headed to and the prograde/retrograde rotations computed for it - bundled
@@ -47,26 +51,36 @@ function planLeg(from: Vector3, destination: Dockable, arrivalPosition: Vector3,
 }
 
 /**
- * A ship running a fixed back-and-forth route between Bases/Stations (economyDefs.ts's
- * ShipDef.route). Alternates "docked" (dwelling, loading/unloading) and "transit" (a flip-and-
- * burn flight - see shipTransit.ts - toward a rendezvous-predicted point on the destination's
- * future path, not its current position). `root` is a plain, unparented world-space
- * TransformNode driving position + rotationQuaternion; both the cube mesh and its billboarded-
- * icon LOD swap (see updateLod) are parented to it at the origin, so they always share the
- * same transform without needing to keep two meshes in sync by hand.
+ * A ship flying between Bases/Stations, buying low and selling high (traders) or hunting enemy
+ * territory (warships - see combat.ts). Alternates "docked" (dwelling, trading/loading) and
+ * "transit" (a flip-and-burn flight - see shipTransit.ts - toward a rendezvous-predicted point on
+ * the destination's future path, not its current position). `root` is a plain, unparented
+ * world-space TransformNode driving position + rotationQuaternion; both the cube mesh and its
+ * billboarded-icon LOD swap (see updateLod) are parented to it at the origin, so they always
+ * share the same transform without needing to keep two meshes in sync by hand.
  *
- * The whole next leg (rendezvous solve, flight profile, prograde/retrograde rotations) is solved
- * the INSTANT a ship docks - dwellSeconds ahead of when it's actually needed - and simply
- * consumed at the moment of departure ("preplan trips and routes the same way the years/orbits
- * are calculated so that they aren't being calculated moment by moment" - the same precompute-
- * once-then-cheaply-apply idea as CelestialOrbit's own position table). See planNextLeg/
- * departNext.
+ * The whole next leg (destination choice, rendezvous solve, flight profile, prograde/retrograde
+ * rotations) is solved the INSTANT a ship docks - dwellSeconds ahead of when it's actually needed
+ * - and simply consumed at the moment of departure ("preplan trips and routes the same way the
+ * years/orbits are calculated so that they aren't being calculated moment by moment" - the same
+ * precompute-once-then-cheaply-apply idea as CelestialOrbit's own position table). See
+ * planNextLeg/departNext. Which dockable counts as the "next leg" is decided dynamically every
+ * time (chooseNextLeg for traders, chooseWarshipDestination for warships) - only the flight math
+ * itself is fixed/preplanned, never the destination choice.
  */
 export class Ship {
   readonly def: ShipDef;
+  readonly role: ShipRole;
   readonly root: TransformNode;
   readonly cubeMesh: Mesh;
   readonly iconMesh: Mesh;
+  readonly health: HealthState;
+  /** Set by combat.ts once this ship's hull reaches 0 - EconomyManager's own per-ship loop checks
+   * this after update() and splices the ship out + disposes it; a ship never removes itself from
+   * a roster it doesn't own. */
+  isDestroyed = false;
+  /** Traders only - null while empty/seeking a profitable good to carry. */
+  cargo: CargoState | null = null;
 
   currentSpeed = 0;
   etaSeconds = 0;
@@ -74,8 +88,6 @@ export class Ship {
   private readonly scene: Scene;
   private elapsed = 0;
   private dwellRemaining: number;
-  private routeIndex: number;
-  private routeDirection: 1 | -1 = 1;
   /** The dock this ship is currently sitting at while "docked" - kept so its position can track
    * that dock's own ongoing motion (orbit/spin) every frame instead of freezing wherever it was
    * at the moment of arrival (a station or a surface Base both keep moving while a ship dwells
@@ -107,11 +119,21 @@ export class Ship {
     return this.liveLeg !== null ? "transit" : "docked";
   }
 
-  constructor(scene: Scene, def: ShipDef, startDock: Dockable, resolveStop: StopResolver) {
+  get faction(): FactionId {
+    return this.def.faction;
+  }
+
+  get worldPosition(): Vector3 {
+    return this.root.position;
+  }
+
+  constructor(scene: Scene, def: ShipDef, startDock: Dockable, context: ShipContext) {
     this.scene = scene;
     this.def = def;
+    this.role = def.role ?? "trader";
+    const maxHull = def.maxHull ?? (this.role === "warship" ? WARSHIP_MAX_HULL : TRADER_MAX_HULL);
+    this.health = { hull: maxHull, maxHull };
     this.trajectoryVisible = graphicsSettings.showShipTrajectories;
-    this.routeIndex = def.startRouteIndex ?? 0;
     // Randomized so a whole roster doesn't all depart in the same frame.
     this.dwellRemaining = def.dwellSeconds * (0.3 + Math.random() * 0.7);
     this.currentDock = startDock;
@@ -139,17 +161,19 @@ export class Ship {
 
     // Plans its very first departure too, exactly like every subsequent one arrive() plans -
     // dwellRemaining (not def.dwellSeconds) is the actual lead time until it happens.
-    this.planNextLeg(resolveStop, this.dwellRemaining);
+    this.planNextLeg(context, this.dwellRemaining);
   }
 
-  update(deltaSeconds: number, cameraWorldPosition: Vector3, resolveStop: StopResolver): void {
+  update(deltaSeconds: number, cameraWorldPosition: Vector3, context: ShipContext): void {
+    if (this.isDestroyed) return;
+
     if (this.phase === "transit") {
       const leg = this.liveLeg!;
       this.elapsed = Math.min(this.elapsed + deltaSeconds, leg.profile.totalSeconds);
       this.currentSpeed = evaluateFlightProfile(leg.profile, this.elapsed, this.root.position);
       evaluateFlightRotation(leg.profile, this.elapsed, leg.qPrograde, leg.qRetrograde, this.root.rotationQuaternion!);
       this.etaSeconds = leg.profile.totalSeconds - this.elapsed;
-      if (this.elapsed >= leg.profile.totalSeconds) this.arrive(resolveStop);
+      if (this.elapsed >= leg.profile.totalSeconds) this.arrive(context);
     } else {
       this.currentSpeed = 0;
       this.etaSeconds = 0;
@@ -160,23 +184,37 @@ export class Ship {
       this.dwellRemaining -= deltaSeconds;
       if (this.dwellRemaining <= 0) this.departNext();
     }
+
+    if (this.role === "warship") combatUpdate(this, context, deltaSeconds);
     this.updateLod(cameraWorldPosition);
   }
 
   toExamineInfo(): ExaminableInfo {
+    const cargoText = this.role === "warship" ? "Armed" : this.cargo ? `Carrying: ${capitalize(this.cargo.good)} x${this.cargo.qty.toFixed(0)}` : "Seeking cargo";
     const info: ExaminableInfo = {
       worldPosition: this.root.position,
       name: this.def.name,
       faction: FACTION_PALETTES[this.def.faction].label,
       kind: "Ship",
       crew: this.def.crew,
-      cargo: this.def.cargo,
+      cargo: cargoText,
+      hull: this.health.hull,
+      maxHull: this.health.maxHull,
     };
+    if (this.role === "warship") info.role = "warship";
     if (this.phase === "transit") {
       info.speedUnitsPerSec = this.currentSpeed;
       info.etaSeconds = this.etaSeconds;
     }
     return info;
+  }
+
+  dispose(): void {
+    this.trajectoryLine?.dispose();
+    this.trajectoryMaterial.dispose();
+    this.cubeMesh.dispose();
+    this.iconMesh.dispose();
+    this.root.dispose();
   }
 
   private updateLod(cameraWorldPosition: Vector3): void {
@@ -186,32 +224,57 @@ export class Ship {
     this.iconMesh.setEnabled(!showCube);
   }
 
-  private arrive(resolveStop: StopResolver): void {
+  private arrive(context: ShipContext): void {
     // Snaps to the destination's ACTUAL current position, erasing the fixed-point solver's
     // small residual error - cheap, and always exactly correct regardless of iteration count.
     const destination = this.liveLeg!.destination;
     destination.predictWorldPositionAt(0, this.root.position);
     this.currentDock = destination;
     this.liveLeg = null;
-    this.dwellRemaining = this.def.dwellSeconds;
     this.trajectoryLine?.dispose();
     this.trajectoryLine = null;
-    // Immediately plans the NEXT departure, dwellSeconds ahead of when it's actually needed -
+
+    if (this.role === "trader" && this.cargo) {
+      // Snapshotted at the moment of sale, not locked in when the leg was planned - an honest
+      // consequence of a market that keeps moving during a long flight.
+      const sellPrice = destination.market.priceOf(this.cargo.good);
+      destination.market.sell(this.cargo.good, this.cargo.qty);
+      context.creditTreasury(this.def.faction, (sellPrice - this.cargo.buyPrice) * this.cargo.qty);
+      this.cargo = null;
+    }
+
+    const dwell = this.role === "warship" ? WARSHIP_DWELL_SECONDS : this.def.dwellSeconds;
+    this.dwellRemaining = dwell;
+    // Immediately plans the NEXT departure, `dwell` seconds ahead of when it's actually needed -
     // see planNextLeg's own comment.
-    this.planNextLeg(resolveStop, this.def.dwellSeconds);
+    this.planNextLeg(context, dwell);
   }
 
-  /** Solves the next leg's full rendezvous/flight profile `leadSeconds` ahead of the actual
-   * departure (called the instant this ship docks, with the fresh dwell period as lead time, or
-   * once at construction for the very first departure) - departNext then just consumes the
-   * result instead of solving anything at the moment it's needed. Predicts this ship's own
+  /** Solves the next leg's full destination choice + rendezvous/flight profile `leadSeconds`
+   * ahead of the actual departure (called the instant this ship docks, with the fresh dwell
+   * period as lead time, or once at construction for the very first departure) - departNext then
+   * just consumes the result instead of solving anything itself. Predicts this ship's own
    * departure position (currentDock's position `leadSeconds` from now, not its current position)
    * since it keeps tracking a moving dock right up until it actually leaves (see update()'s
-   * docked branch) - solving from where it will BE, not where it happens to be sitting right now. */
-  private planNextLeg(resolveStop: StopResolver, leadSeconds: number): void {
-    this.advanceRouteIndex();
-    const destination = resolveStop(this.def.route[this.routeIndex]);
+   * docked branch) - solving from where it will BE, not where it happens to be sitting right now.
+   * Traders pick up cargo here too (if chooseNextLeg found something worth buying) - loaded while
+   * docked, at the price the market shows at the moment of the decision. */
+  private planNextLeg(context: ShipContext, leadSeconds: number): void {
     this.currentDock!.predictWorldPositionAt(leadSeconds, tmpPlannedFrom);
+
+    let destination: Dockable;
+    if (this.role === "warship") {
+      destination = chooseWarshipDestination(context, this.currentDock!, this.def.faction, tmpPlannedFrom);
+    } else {
+      const chosen = chooseNextLeg(context, this.currentDock!, this.def.faction, tmpPlannedFrom, this.def.cruiseSpeed, this.def.cargoCapacity, this.cargo);
+      destination = chosen.destination;
+      if (chosen.pickup) {
+        const buyPrice = this.currentDock!.market.priceOf(chosen.pickup.good);
+        this.currentDock!.market.buy(chosen.pickup.good, chosen.pickup.qty);
+        this.cargo = { good: chosen.pickup.good, qty: chosen.pickup.qty, buyPrice };
+      }
+    }
+
     const result = solveRendezvous(this.currentDock!, tmpPlannedFrom, destination, this.def.cruiseSpeed, leadSeconds);
     this.plannedLeg = planLeg(tmpPlannedFrom, destination, result.arrivalPosition, result.travelSeconds);
   }
@@ -249,15 +312,5 @@ export class Ship {
   setTrajectoryVisible(visible: boolean): void {
     this.trajectoryVisible = visible;
     this.trajectoryLine?.setEnabled(visible);
-  }
-
-  /** Bounces at either end of the route rather than looping back to the start - the simplest
-   * "reverse the route" interpretation of a fixed back-and-forth supply run. */
-  private advanceRouteIndex(): void {
-    const next = this.routeIndex + this.routeDirection;
-    if (next < 0 || next >= this.def.route.length) {
-      this.routeDirection = (this.routeDirection * -1) as 1 | -1;
-    }
-    this.routeIndex += this.routeDirection;
   }
 }

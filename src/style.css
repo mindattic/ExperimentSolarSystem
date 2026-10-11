@@ -352,6 +352,48 @@ body {
   display: none;
 }
 
+.faction-status-panel {
+  position: fixed;
+  /* Sits just below #menuButton (top:16px, ~40px tall) rather than at top:16px itself, which
+     would otherwise sit directly underneath that always-visible button - the only time this
+     still overlaps anything is while the menu dropdown is actually open (same top offset), a
+     brief, deliberate user action rather than a permanent collision. */
+  top: 58px;
+  right: 16px;
+  z-index: 16;
+  padding: 8px 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  color: #d8e8ff;
+  background: rgba(10, 10, 12, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.war-badge {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 16;
+  padding: 6px 16px;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ff7b7b;
+  background: rgba(40, 10, 10, 0.75);
+  border: 1px solid rgba(255, 123, 123, 0.5);
+  border-radius: 6px;
+}
+
+.war-badge[hidden] {
+  display: none;
+}
+
 .examine-layer {
   position: fixed;
   top: 0;
